@@ -1,6 +1,4 @@
 import streamlit as st
-import math
-import pandas as pd
 from biegefunctions import dimensioning, calculate_alpha_k_a, steel_stress_strain_relation
 from pint import UnitRegistry
 from handcalcs.decorator import handcalc
@@ -14,10 +12,17 @@ ureg = UnitRegistry()
 ureg.auto_reduce_dimensions = True
 m, cm, kN, N_mm2 = ureg.m, ureg.cm, ureg.kN, ureg.N / ureg.mm**2
 
-f_yk2 = 500*N_mm2
+def render_handcalcs_latex(latex_code):
+    """Normalize handcalcs output for Streamlit's LaTeX renderer."""
+    cleaned = latex_code.strip()
+    if cleaned.startswith("$$") and cleaned.endswith("$$"):
+        cleaned = cleaned[2:-2].strip()
+    return cleaned
 
 with st.expander("# Eingangsgrößen"):
     col1, col2, col3 =st.columns(3)
+    d_1 = 0 * ureg.mm
+    d_prime = 20 * ureg.mm
     with col1:
         M_Ed = st.number_input("Bemessungsmoment [kNm]", value=240.0)*ureg.kN*ureg.m
         N_Ed = st.number_input("Bemessungsnormalkraft (Zug positiv) [kN]", value=40.0)*ureg.kN
@@ -27,8 +32,8 @@ with st.expander("# Eingangsgrößen"):
 
         d_L=st.number_input("Durchmesser Längsbewehrung [mm]",value=8)
         d_Q=st.number_input("Durchmesser Querbewehrung [mm]",value=10)*ureg.mm
-        overwrite_dL = st.selectbox("Bewehrungabstand selber wählen?", [True, False], index=1)
-        if overwrite_dL == False:
+        overwrite_dL = st.checkbox("Bewehrungsabstand selber wählen", value=False)
+        if not overwrite_dL:
             cover_class = st.multiselect("Betongüte", options=get_all_exposure_classes())
             cover_max = get_max_concrete_cover(cover_class, d_L)
             d_L = d_L*ureg.mm
@@ -36,14 +41,14 @@ with st.expander("# Eingangsgrößen"):
         else:
             d_prime = st.number_input("Bewehrungsabstand [mm]",value=20)*ureg.mm
     with col3:
-        concrete_types = ec.ConcreteClasses.keys()
+        concrete_types = ec.ConcreteGrades.keys()
         selected_concrete_type = st.selectbox("Beton", concrete_types, index=1)
-        concrete = ec.ConcreteClasses[selected_concrete_type] # Alternative 4
+        concrete = ec.ConcreteGrades[selected_concrete_type] # Alternative 4
         f_ck = concrete["fck"]*N_mm2  # Characteristic compressive strength
         f_ctm = concrete["fctm"]*N_mm2
-        reinforcement_types = ec.ReinforcementClasses.keys()
+        reinforcement_types = ec.ReinforcementGrades.keys()
         selected_reinforcement_type = st.selectbox("Bewehrungsstahl", reinforcement_types, index=15)
-        reinforcment = ec.ReinforcementClasses[selected_reinforcement_type]
+        reinforcment = ec.ReinforcementGrades[selected_reinforcement_type]
         f_yk = reinforcment["fyk"]*N_mm2
         f_tk = 525*N_mm2
         gamma_s = 1.15
@@ -68,7 +73,7 @@ def d_formula(h,d_1, d_L, d_Q):
     return locals()
 
 @handcalc(precision=2)
-def d_formula_overwite(h,d_prime):
+def d_formula_overwrite(h,d_prime):
     d_prime = d_prime
     z_s = h/2-d_prime
     d = h - d_prime
@@ -116,49 +121,49 @@ def Mcr_N(b,d,h, f_ctm,f_yk,N_Ed):
     M_riss = (W_y*f_ctm-Delta_M).to(ureg.kN*ureg.m)
     return locals()
 
-st.markdown("Nutzhöhe, Hebelarm")
-if overwrite_dL == False:
-    latex_code, output = d_formula(h,d_1, d_L, d_Q)
+if not overwrite_dL:
+    d_latex, d_output = d_formula(h,d_1, d_L, d_Q)
 else:
-    latex_code, output = d_formula_overwite(h,d_prime)
-d = output["d"]
-z_s = output["z_s"]
-st.latex(latex_code)
+    d_latex, d_output = d_formula_overwrite(h,d_prime)
+d = d_output["d"]
+z_s = d_output["z_s"]
+st.markdown("Nutzhöhe, Hebelarm")
+st.latex(render_handcalcs_latex(d_latex))
 
+fcd_latex, fcd_output = fcd_formula(f_ck, f_yk, f_tk, gamma_s)
+f_cd = fcd_output["f_cd"]
 st.markdown("Materialdaten")
-latex_code, output = fcd_formula(f_ck, f_yk, f_tk, gamma_s)
-f_cd = output["f_cd"]
-st.latex(latex_code)
+st.latex(render_handcalcs_latex(fcd_latex))
 
 
+mueds_latex, mueds_output = mu_Eds_formula(M_Ed,N_Ed,b,d,f_cd, z_s)
+mu_Eds = mueds_output["mu_Eds"]
 st.markdown("dimensionsloser Eingangswert")
-latex_code, output = mu_Eds_formula(M_Ed,N_Ed,b,d,f_cd, z_s)
-mu_Eds = output["mu_Eds"]
-st.latex(latex_code)
+st.latex(render_handcalcs_latex(mueds_latex))
+
+result = dimensioning(mu_Eds)
+if result is None:
+    st.error("Keine gueltige Dehnungsebene fuer die Eingabewerte gefunden.")
+    st.stop()
+
+e_c, e_s = result
+alpha_r, k_a  = calculate_alpha_k_a(e_c)
+
+strain_latex, strain_output = es_ec_sigma_formula(e_s, e_c, f_yk)
+sigma_sd = strain_output["sigma_sd"]
+bieg_latex, bieg_output = biege_parameters(e_c, e_s, alpha_r, k_a)
+omega = bieg_output["omega"]
 
 with st.expander("Dehungsebene", expanded=False):
-    result = dimensioning(mu_Eds)
-    if result is not None:
-        e_c, e_s = result
-    alpha_r, k_a  = calculate_alpha_k_a(e_c)
+    st.latex(render_handcalcs_latex(strain_latex))
+    st.latex(render_handcalcs_latex(bieg_latex))
 
-    latex_code, output = es_ec_sigma_formula(e_s, e_c, f_yk)
-    sigma_sd = output["sigma_sd"]
-    st.latex(latex_code)
-
-
-    latex_code, output = biege_parameters(e_c, e_s, alpha_r, k_a)
-    omega = output["omega"]
-    st.latex(latex_code)
+asreq_latex, asreq_output = As_omega(omega,b,d, f_cd, sigma_sd,N_Ed)
+asmin_latex, asmin_output = As_min(b,d,h,f_ctm,f_yk)
+mcr_latex, mcr_output = Mcr_N(b,d,h,f_ctm,f_yk,N_Ed)
 
 st.markdown("erforderliche Bewehrung")
-latex_code, _ = As_omega(omega,b,d, f_cd, sigma_sd,N_Ed)
-st.latex(latex_code)
+st.latex(render_handcalcs_latex(asreq_latex))
 
 st.markdown("Rissbewehrung")
-
-latex_code, _ = As_min(b,d,h,f_ctm,f_yk)
-st.latex(latex_code)
-
-latex_code, _ = Mcr_N(b,d,h,f_ctm,f_yk,N_Ed)
-st.latex(latex_code)
+st.latex(render_handcalcs_latex(asmin_latex))
